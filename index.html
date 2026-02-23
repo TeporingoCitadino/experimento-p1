@@ -1,0 +1,2313 @@
+<!DOCTYPE html><html lang="en"><head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png+xml" href="/icon/fp black.png">
+    <title>Experiment</title>
+
+    <link href="https://adndvlp.github.io/jspsych-cdn-for-expbuilder/index.css" rel="stylesheet" type="text/css">
+    <script src="https://cdn.jsdelivr.net/gh/jspsych/jspsych@jspsych@7.0.0/examples/js/webgazer/webgazer.js"></script>
+
+    <script src="https://adndvlp.github.io/jspsych-cdn-for-expbuilder/index.js"></script>
+
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #f0f0f0;
+      }
+      #jspsych-container {
+        width: 100%;
+        height: 100vh;
+      }
+      #jspsych-target {
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="jspsych-container">
+      <div id="jspsych-target"></div>
+    </div>
+
+    
+  
+
+<script id="generated-script">
+
+  // --- IndexedDB Wrapper para Batching con TTL (3 días) ---
+  const TrialDB = {
+    dbName: 'jsPsychTrialsDB',
+    storeName: 'trials',
+    db: null,
+    TTL_DAYS: 3,
+
+    async init() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(this.dbName, 1);
+        
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          this.db = request.result;
+          // Limpiar datos vencidos al iniciar
+          this.cleanExpiredData().catch(err => console.error('Error cleaning expired data:', err));
+          resolve(this.db);
+        };
+        
+        request.onupgradeneeded = (event) => {
+          const db = event.target.result;
+          if (!db.objectStoreNames.contains(this.storeName)) {
+            const store = db.createObjectStore(this.storeName, { 
+              keyPath: 'id', 
+              autoIncrement: true 
+            });
+            store.createIndex('sessionId', 'sessionId', { unique: false });
+            store.createIndex('timestamp', 'timestamp', { unique: false });
+            store.createIndex('createdAt', 'createdAt', { unique: false });
+          }
+        };
+      });
+    },
+
+    async cleanExpiredData() {
+      if (!this.db) await this.init();
+      const now = Date.now();
+      const expirationTime = this.TTL_DAYS * 24 * 60 * 60 * 1000; // 3 días en ms
+      
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction([this.storeName], 'readwrite');
+        const store = transaction.objectStore(this.storeName);
+        const index = store.index('createdAt');
+        const request = index.openCursor();
+        
+        let deletedCount = 0;
+        
+        request.onsuccess = (event) => {
+          const cursor = event.target.result;
+          if (cursor) {
+            const trial = cursor.value;
+            const age = now - (trial.createdAt || now);
+            
+            if (age > expirationTime) {
+              cursor.delete();
+              deletedCount++;
+            }
+            cursor.continue();
+          } else {
+            if (deletedCount > 0) {
+              console.log(`Cleaned ${deletedCount} expired trials from IndexedDB`);
+            }
+            resolve(deletedCount);
+          }
+        };
+        
+        request.onerror = () => reject(request.error);
+      });
+    },
+
+    async add(trial) {
+      if (!this.db) await this.init();
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction([this.storeName], 'readwrite');
+        const store = transaction.objectStore(this.storeName);
+        const request = store.add({
+          ...trial,
+          timestamp: Date.now(),
+          createdAt: Date.now(),
+          sessionId: trialSessionId
+        });
+        
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    },
+
+    async getAll() {
+      if (!this.db) await this.init();
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction([this.storeName], 'readonly');
+        const store = transaction.objectStore(this.storeName);
+        const request = store.getAll();
+        
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    },
+
+    async count() {
+      if (!this.db) await this.init();
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction([this.storeName], 'readonly');
+        const store = transaction.objectStore(this.storeName);
+        const request = store.count();
+        
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    },
+
+    async getN(n) {
+      if (!this.db) await this.init();
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction([this.storeName], 'readonly');
+        const store = transaction.objectStore(this.storeName);
+        const request = store.getAll(null, n);
+        
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    },
+
+    async deleteN(n) {
+      if (!this.db) await this.init();
+      const trials = await this.getN(n);
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction([this.storeName], 'readwrite');
+        const store = transaction.objectStore(this.storeName);
+        
+        trials.forEach(trial => {
+          store.delete(trial.id);
+        });
+        
+        transaction.oncomplete = () => resolve(trials.length);
+        transaction.onerror = () => reject(transaction.error);
+      });
+    },
+
+    async clear() {
+      if (!this.db) await this.init();
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction([this.storeName], 'readwrite');
+        const store = transaction.objectStore(this.storeName);
+        const request = store.clear();
+        
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+    }
+  };
+
+  // --- Recolectar metadata del sistema ---
+  const getMetadata = () => {
+    const ua = navigator.userAgent;
+    let browserName = 'Unknown';
+    let browserVersion = 'Unknown';
+    
+    if (ua.indexOf('Firefox') > -1) {
+      browserName = 'Firefox';
+      browserVersion = ua.match(/Firefox\/(\d+\.\d+)/)?.[1] || 'Unknown';
+    } else if (ua.indexOf('Chrome') > -1) {
+      browserName = 'Chrome';
+      browserVersion = ua.match(/Chrome\/(\d+\.\d+)/)?.[1] || 'Unknown';
+    } else if (ua.indexOf('Safari') > -1) {
+      browserName = 'Safari';
+      browserVersion = ua.match(/Version\/(\d+\.\d+)/)?.[1] || 'Unknown';
+    } else if (ua.indexOf('Edg') > -1) {
+      browserName = 'Edge';
+      browserVersion = ua.match(/Edg\/(\d+\.\d+)/)?.[1] || 'Unknown';
+    }
+    
+    let osName = 'Unknown';
+    if (ua.indexOf('Win') > -1) osName = 'Windows';
+    else if (ua.indexOf('Mac') > -1) osName = 'macOS';
+    else if (ua.indexOf('Linux') > -1) osName = 'Linux';
+    else if (ua.indexOf('Android') > -1) osName = 'Android';
+    else if (ua.indexOf('iOS') > -1) osName = 'iOS';
+    
+    return {
+      browser: browserName,
+      browserVersion: browserVersion,
+      os: osName,
+      screenWidth: window.screen.width,
+      screenHeight: window.screen.height,
+      screenResolution: `${window.screen.width}x${window.screen.height}`,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      language: navigator.language,
+      userAgent: ua,
+      startedAt: new Date().toISOString()
+    };
+  };
+  
+  const metadata = getMetadata();
+
+  // --- Firebase config ---
+  const firebaseConfig = {
+    apiKey: "AIzaSyBEbJ-uGKzsaf2u24KPamBPVZrUmvhFk-Q",
+    authDomain: "test-e4cf9.firebaseapp.com",
+    databaseURL: "https://test-e4cf9-default-rtdb.firebaseio.com",
+    projectId: "test-e4cf9",
+    storageBucket: "test-e4cf9.firebasestorage.app",
+    messagingSenderId: "414213417080",
+    appId: "1:414213417080:web:98607c621a54d07656e58d"
+  };
+
+  // --- Cargar Firebase SDK ---
+  if (typeof window.firebase === 'undefined') {
+    const script = document.createElement('script');
+    script.src = 'https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js';
+    script.onload = () => {
+      const dbScript = document.createElement('script');
+      dbScript.src = 'https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js';
+      dbScript.onload = () => { window._firebaseReady = true; };
+      document.head.appendChild(dbScript);
+    };
+    document.head.appendChild(script);
+  } else {
+    window._firebaseReady = true;
+  }
+
+  function waitForFirebase() {
+    return new Promise(resolve => {
+      if (window._firebaseReady) return resolve();
+      const interval = setInterval(() => {
+        if (window._firebaseReady) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 50);
+    });
+  }
+
+ 
+  const userStr = {"uid":"mlSMzEDkQLap4bGg1dexVdDnH3O2","email":"tep.nem@gmail.com"};
+
+  const Uid = userStr.uid
+
+  // Recuperar sessionId de localStorage o crear uno nuevo
+  let trialSessionId = localStorage.getItem('jsPsych_currentSessionId');
+  let storedParticipantNumber = localStorage.getItem('jsPsych_participantNumber');
+  let isResuming = false;
+  
+  if (!trialSessionId) {
+    trialSessionId = "online_" + (crypto.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2, 10));
+    console.log('🆕 [RESUME] Created NEW sessionId:', trialSessionId);
+  } else {
+    isResuming = true;
+    console.log('🔄 [RESUME] Loaded EXISTING sessionId from localStorage:', trialSessionId);
+  }
+
+  let participantNumber;
+
+  async function createSession() {
+    try {
+      const res = await fetch("https://us-central1-test-e4cf9.cloudfunctions.net/apiData", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "*/*" },
+        body: JSON.stringify({
+          experimentID: "5899f5b8-8a58-4c17-8c00-084081141616",
+          sessionId: trialSessionId,
+          uid: Uid,
+          batchSize: 0
+        }),
+      });
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error('Error creating session:', errorText);
+        throw new Error(`Failed to create session: ${res.status} - ${errorText}`);
+      }
+      
+      const result = await res.json();
+      console.log('Session created:', result);
+      
+      if (!result.success) {
+        throw new Error(result.message || 'Failed to create session');
+      }
+      
+      return result.participantNumber;
+    } catch (error) {
+      console.error('Error in createSession:', error);
+      alert('Error creating session: ' + error.message);
+      throw error;
+    }
+  }
+
+  (async () => {
+    // Limpiar el localStorage de valores de sesiones anteriores (solo repeat/jump conditions)
+    localStorage.removeItem('jsPsych_jumpToTrial');
+    
+    // --- Configuración de Batching (cargada desde Firestore) ---
+    const BATCH_CONFIG = {
+      size: 0,
+      currentBatchNumber: 0,
+      resumeTimeoutMinutes: 30,
+      useIndexedDB: true
+    };
+
+    // Inicializar IndexedDB solo si está habilitado
+    if (BATCH_CONFIG.useIndexedDB) {
+      await TrialDB.init();
+    }
+    
+    // Verificar si hay una sesión pendiente (para retoma)
+    let resumedSession = false;
+    
+    if (BATCH_CONFIG.useIndexedDB) {
+      console.log('🔍 [RESUME] Checking IndexedDB for existing trials...');
+      const existingTrials = await TrialDB.getAll();
+      console.log('🔍 [RESUME] Found ' + existingTrials.length + ' trials in IndexedDB');
+      
+      if (existingTrials.length > 0) {
+        const lastTrial = existingTrials[existingTrials.length - 1];
+        console.log('🔍 [RESUME] Last trial sessionId:', lastTrial.sessionId);
+        console.log('🔍 [RESUME] Current sessionId:', trialSessionId);
+        
+        if (lastTrial.sessionId === trialSessionId) {
+          console.log('✅ [RESUME] Resuming session with ' + existingTrials.length + ' existing trials');
+          BATCH_CONFIG.currentBatchNumber = Math.floor(existingTrials.length / (BATCH_CONFIG.size || 1));
+          resumedSession = true;
+        } else {
+          console.log('❌ [RESUME] SessionId mismatch. Clearing old trials from different session.');
+          console.log('   Old:', lastTrial.sessionId);
+          console.log('   New:', trialSessionId);
+          await TrialDB.clear();
+        }
+      } else {
+        console.log('ℹ️ [RESUME] No existing trials found. Starting fresh session.');
+      }
+    } else {
+      console.log('ℹ️ [RESUME] IndexedDB disabled. Resume check skipped.');
+    }
+    
+    // SIEMPRE llamar a createSession (para crear documento en Firestore)
+    // El backend maneja sesiones duplicadas (409) y las retorna correctamente
+    participantNumber = await createSession();
+    
+    // Guardar sessionId y participantNumber en localStorage para futuras retomas
+    localStorage.setItem('jsPsych_currentSessionId', trialSessionId);
+    localStorage.setItem('jsPsych_participantNumber', participantNumber.toString());
+
+    if (typeof participantNumber !== "number" || isNaN(participantNumber)) {
+      alert("The participant number is not assigned. Please, wait.");
+      throw new Error("participantNumber not assigned");
+    }
+
+    console.log('Participant number assigned:', participantNumber);
+    
+    // Esperar e inicializar Firebase
+    await waitForFirebase();
+    if (!window.firebase.apps.length) {
+      window.firebase.initializeApp(firebaseConfig);
+    }
+    const db = window.firebase.database();
+
+    // --- Configurar onDisconnect para finalizar sesión automáticamente ---
+    const sessionRef = db.ref('sessions/5899f5b8-8a58-4c17-8c00-084081141616/' + trialSessionId);
+    await sessionRef.set({
+      connected: true,
+      experimentID: '5899f5b8-8a58-4c17-8c00-084081141616',
+      sessionId: trialSessionId,
+      participantNumber: participantNumber,
+      startedAt: window.firebase.database.ServerValue.TIMESTAMP,
+      storage: 'googledrive',
+      storageProvider: 'googledrive',
+      state: resumedSession ? 'resumed' : 'initiated',
+      lastUpdate: window.firebase.database.ServerValue.TIMESTAMP,
+      metadata: metadata,
+      resumeTimeoutMinutes: BATCH_CONFIG.resumeTimeoutMinutes,
+      useIndexedDB: BATCH_CONFIG.useIndexedDB
+    });
+    
+    sessionRef.onDisconnect().update({
+      connected: false,
+      state: 'disconnected',
+      disconnectedAt: window.firebase.database.ServerValue.TIMESTAMP,
+      storage: 'googledrive'
+    });
+
+    // --- Branching logic functions (outside initJsPsych for timeline access) ---
+    window.nextTrialId = null;
+    window.skipRemaining = false;
+    window.branchingActive = false;
+    window.branchCustomParameters = null; // Store custom parameters for the next trial
+
+    const evaluateCondition = (trialData, condition) => {
+      // All rules in a condition must be true (AND logic)
+      return condition.rules.every(rule => {
+        // Construct column name from componentIdx and prop if column is empty
+        // This handles dynamic plugins like ButtonResponseComponent_1_response
+        let columnName = rule.column || "";
+        if (!columnName && rule.componentIdx && rule.prop) {
+          columnName = rule.componentIdx + '_' + rule.prop;
+        } else if (!columnName && rule.prop) {
+          columnName = rule.prop;
+        }
+        
+        if (!columnName) {
+          console.warn('No column name specified in rule:', rule);
+          return false;
+        }
+        
+        // Get value directly from the column
+        const propValue = trialData[columnName];
+        
+        if (propValue === undefined) {
+          console.warn('Column not found in trial data:', columnName);
+          return false;
+        }
+        
+        const compareValue = rule.value;
+        
+        // Handle array responses (multi-select or single-select returned as array)
+        if (Array.isArray(propValue)) {
+          const matches = propValue.includes(compareValue) || propValue.includes(String(compareValue));
+          switch (rule.op) {
+            case '==':
+              return matches;
+            case '!=':
+              return !matches;
+            default:
+              return false;
+          }
+        }
+        
+        // Convert values for comparison (for non-array values)
+        const numPropValue = parseFloat(propValue);
+        const numCompareValue = parseFloat(compareValue);
+        const isNumeric = !isNaN(numPropValue) && !isNaN(numCompareValue);
+        
+        switch (rule.op) {
+          case '==':
+            return isNumeric ? numPropValue === numCompareValue : propValue == compareValue;
+          case '!=':
+            return isNumeric ? numPropValue !== numCompareValue : propValue != compareValue;
+          case '>':
+            return isNumeric && numPropValue > numCompareValue;
+          case '<':
+            return isNumeric && numPropValue < numCompareValue;
+          case '>=':
+            return isNumeric && numPropValue >= numCompareValue;
+          case '<=':
+            return isNumeric && numPropValue <= numCompareValue;
+          default:
+            return false;
+        }
+      });
+    };
+    
+    const getNextTrialId = (lastTrialData) => {
+      if (!lastTrialData || !lastTrialData.trials || !lastTrialData.trials[0]) {
+        return null;
+      }
+      
+      const trial = lastTrialData.trials[0];
+      
+      // Check if trial/loop has branches
+      if (!Array.isArray(trial.branches) || trial.branches.length === 0) {
+        return null;
+      }
+      
+      // Check if there are conditions to evaluate
+      const hasBranchConditions = Array.isArray(trial.branchConditions) && trial.branchConditions.length > 0;
+      
+      // Check if any condition has customParameters
+      const hasCustomParameters = hasBranchConditions && 
+        trial.branchConditions.flat().some(condition => 
+          condition && condition.customParameters && 
+          Object.keys(condition.customParameters).length > 0
+        );
+      
+      // If there are no conditions AND no custom parameters, auto-branch to first branch
+      if (!hasBranchConditions && !hasCustomParameters) {
+        console.log('No conditions or custom parameters defined, auto-branching to first branch:', trial.branches[0]);
+        return trial.branches[0];
+      }
+      
+      // If there are no conditions but there ARE custom parameters, we can't auto-branch
+      // We need to evaluate conditions to know which customParameters to use
+      if (!hasBranchConditions && hasCustomParameters) {
+        console.log('Custom parameters exist but no conditions, cannot auto-branch');
+        return null;
+      }
+      
+      // If there ARE conditions, evaluate them (regardless of how many branches there are)
+      // branchConditions is an array of arrays, flatten it first
+      const conditions = trial.branchConditions.flat();
+      
+      // Evaluate each condition (OR logic between conditions)
+      for (const condition of conditions) {
+        if (!condition || !condition.rules) {
+          console.warn('Invalid condition structure:', condition);
+          continue;
+        }
+        
+        if (evaluateCondition(trial, condition)) {
+          // Store custom parameters if they exist
+          if (condition.customParameters) {
+            window.branchCustomParameters = condition.customParameters;
+          }
+          return condition.nextTrialId;
+        }
+      }
+      
+      // No condition matched - do NOT branch (conditions were defined but none matched)
+      return null;
+    };
+
+    // Track pending batch saves
+    const pendingBatchSaves = [];
+
+    // Función para enviar batch concatenado a Firestore (usando endpoint existente)
+    async function sendBatchConcatenated(trials, batchNumber) {
+      if (trials.length === 0) return;
+      
+      console.log(`Sending concatenated batch #${batchNumber} with ${trials.length} trials`);
+      
+      // Concatenar trials en un documento plano sin anidamiento
+      // Convertir cada trial a string JSON y concatenar con separador
+      const concatenatedData = {
+        batchNumber: batchNumber,
+        trialsCount: trials.length,
+        trialsData: JSON.stringify(trials), // String, no array anidado
+        firstTrialIndex: trials[0]?.trial_index || 0,
+        lastTrialIndex: trials[trials.length - 1]?.trial_index || 0,
+        clientTimestamp: trials[0]?.clientTimestamp || Date.now(),
+        trial_index: `batch_${batchNumber}` // ID único para batch
+      };
+      
+      const batchPromise = fetch("https://us-central1-test-e4cf9.cloudfunctions.net/apiData", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "*/*" },
+        body: JSON.stringify({
+          experimentID: "5899f5b8-8a58-4c17-8c00-084081141616",
+          sessionId: trialSessionId,
+          data: concatenatedData,
+          storage: "googledrive",
+        }),
+      })
+      .then(res => {
+        if (!res.ok) {
+          return res.text().then(text => {
+            console.error('Error sending batch:', text);
+          });
+        }
+        return res.json();
+      })
+      .then(result => {
+        if (result && result.success) {
+          console.log(`Batch #${batchNumber} sent successfully`);
+        }
+      })
+      .catch(error => {
+        console.error('Error in sendBatchConcatenated:', error);
+      })
+      .finally(() => {
+        const index = pendingBatchSaves.indexOf(batchPromise);
+        if (index > -1) {
+          pendingBatchSaves.splice(index, 1);
+        }
+      });
+      
+      pendingBatchSaves.push(batchPromise);
+      return batchPromise;
+    }
+
+    // Función para enviar experimento completo directo al storage
+    async function sendCompleteExperiment(trials) {
+      if (trials.length === 0) return;
+      
+      console.log(`Sending complete experiment with ${trials.length} trials directly to storage`);
+      
+      // Agregar metadata a cada trial
+      const trialsWithMetadata = trials.map(trial => ({
+        ...trial,
+        session_browser: metadata.browser || "",
+        session_browser_version: metadata.browserVersion || "",
+        session_os: metadata.os || "",
+        session_screen_resolution: metadata.screenResolution || "",
+        session_language: metadata.language || "",
+        session_started_at: metadata.startedAt || "",
+        session_id: trialSessionId,
+      }));
+      
+      // Enviar trials como JSON - el backend los convertirá a CSV
+      const apiBaseUrl = "https://us-central1-test-e4cf9.cloudfunctions.net/apiData".replace('/apiData', '');
+      return fetch(`${apiBaseUrl}/apiDataComplete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "*/*" },
+        body: JSON.stringify({
+          experimentID: "5899f5b8-8a58-4c17-8c00-084081141616",
+          sessionId: trialSessionId,
+          trialsData: trialsWithMetadata,
+          storage: "googledrive",
+        }),
+      })
+      .then(res => {
+        if (!res.ok) {
+          return res.text().then(text => {
+            console.error('Error sending complete experiment:', text);
+            throw new Error(text);
+          });
+        }
+        return res.json();
+      })
+      .then(result => {
+        if (result && result.success) {
+          console.log('Complete experiment sent successfully to storage');
+        }
+        return result;
+      })
+      .catch(error => {
+        console.error('Error in sendCompleteExperiment:', error);
+        throw error;
+      });
+    }
+
+    // Verificar si hay un trial guardado para retomar (de una sesión previa)
+    const resumeTrialId = localStorage.getItem('jsPsych_resumeTrial');
+    console.log('🔍 [RESUME] Checking for resume trial ID in localStorage...');
+    console.log('🔍 [RESUME] resumeTrialId:', resumeTrialId);
+    
+    if (resumeTrialId) {
+      console.log('✅ [RESUME] Found resume point! Jumping to trial:', resumeTrialId);
+      // Usar la misma lógica de jump pero con la key de retoma
+      localStorage.setItem('jsPsych_jumpToTrial', resumeTrialId);
+      localStorage.removeItem('jsPsych_resumeTrial');
+      console.log('✅ [RESUME] Set jsPsych_jumpToTrial to:', resumeTrialId);
+    } else {
+      console.log('ℹ️ [RESUME] No resume trial ID found. Starting from beginning.');
+    }
+
+    const jsPsych = initJsPsych({
+      display_element: document.getElementById('jspsych-container'),
+
+      on_trial_start: function(trial) {
+        const lastTrialData = jsPsych.data.get()
+        if (lastTrialData && trial.data) {
+        trial.data.prev_response = lastTrialData.response;
+        }
+      },
+
+      
+
+      on_data_update: async function (data) {
+
+        // Agregar timestamp del cliente para ordenamiento correcto
+        data.clientTimestamp = Date.now();
+        data.sessionId = trialSessionId;
+        data.experimentID = "5899f5b8-8a58-4c17-8c00-084081141616";
+
+        // Actualizar estado a 'in-progress' en la primera actualización
+        if (data.trial_index === 0) {
+          sessionRef.update({
+            state: 'in-progress',
+            lastUpdate: window.firebase.database.ServerValue.TIMESTAMP
+          }).catch(err => console.error('Error updating state:', err));
+        }
+
+        // 🔄 SISTEMA DE RETOMA: Guardar builder_id (jsPsych no lo sobrescribe)
+        if (data.builder_id !== undefined && data.builder_id !== null) {
+          localStorage.setItem('jsPsych_resumeTrial', String(data.builder_id));
+          console.log('💾 [RESUME] Saved builder_id:', data.builder_id);
+        }
+
+        if (BATCH_CONFIG.useIndexedDB) {
+          // --- CON IndexedDB: Batching habilitado ---
+          try {
+            await TrialDB.add(data);
+            console.log(`Trial ${data.trial_index} saved to IndexedDB`);
+          } catch (error) {
+            console.error('Error saving to IndexedDB:', error);
+          }
+
+          // Solo enviar batches si batchSize > 0
+          if (BATCH_CONFIG.size > 0) {
+            const pendingCount = await TrialDB.count();
+            
+            // Enviar batch cuando se acumule el tamaño configurado
+            if (pendingCount >= BATCH_CONFIG.size) {
+              const batch = await TrialDB.getN(BATCH_CONFIG.size);
+              BATCH_CONFIG.currentBatchNumber++;
+              
+              // Enviar batch concatenado a Firestore
+              await sendBatchConcatenated(batch, BATCH_CONFIG.currentBatchNumber);
+              
+              // Eliminar trials enviados de IndexedDB
+              await TrialDB.deleteN(BATCH_CONFIG.size);
+              
+              console.log(`Batch #${BATCH_CONFIG.currentBatchNumber} sent, ${batch.length} trials`);
+            }
+          }
+          // Si batchSize = 0, solo acumular en IndexedDB, enviar TODO en on_finish
+        } else {
+          // --- SIN IndexedDB: Enviar trial por trial a Firestore ---
+          try {
+            const response = await fetch("https://us-central1-test-e4cf9.cloudfunctions.net/apiData", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                experimentID: "5899f5b8-8a58-4c17-8c00-084081141616",
+                sessionId: trialSessionId,
+                data: data
+              })
+            });
+
+            if (!response.ok) {
+              console.error('Error sending trial to Firestore:', await response.text());
+            } else {
+              console.log(`Trial ${data.trial_index} sent to Firestore`);
+            }
+          } catch (error) {
+            console.error('Error sending trial:', error);
+          }
+        }
+
+        // Solo evaluar branching si el trial/loop tiene un trial_id o loop_id válido
+      if ((!data.trial_id || data.trial_id === undefined) && (!data.loop_id || data.loop_id === undefined)) {
+        return;
+      }
+      
+      const lastTrialData = jsPsych.data.getLastTrialData();
+      const trial = lastTrialData.trials ? lastTrialData.trials[0] : null;
+      
+      // Verificar si este trial/loop tiene branches
+      if (!trial || !trial.branches || trial.branches.length === 0) {
+        return; // No tiene branches, no hay nada que hacer
+      }
+      
+      // IMPORTANTE: Si el trial está dentro de un loop (isInLoop = true),
+      // NO activar el branching global. Los trials dentro de loops usan su propio
+      // sistema de branching con variables locales (loopNextTrialId, etc.)
+      if (trial.isInLoop === true) {
+        return;
+      }
+      
+      const nextTrialId = getNextTrialId(lastTrialData);
+      
+      if (nextTrialId) {
+        // Check if nextTrialId is "FINISH_EXPERIMENT"
+        if (nextTrialId === 'FINISH_EXPERIMENT') {
+          console.log('🏁 [BRANCHING] Finishing experiment via branching');
+          jsPsych.abortExperiment('Experiment finished by branching condition', {});
+          return;
+        }
+        
+        console.log('🎯 [BRANCHING] Setting global branch target:', nextTrialId);
+        window.nextTrialId = nextTrialId;
+        window.skipRemaining = true;
+        window.branchingActive = true;
+        console.log('🎯 [BRANCHING] Skip remaining activated');
+      }
+      },
+
+      on_finish: async function() {
+        
+        console.log('Experiment finishing...');
+        
+        // Limpiar el localStorage de retoma ya que el experimento terminó correctamente
+        localStorage.removeItem('jsPsych_resumeTrial');
+        localStorage.removeItem('jsPsych_currentSessionId');
+        localStorage.removeItem('jsPsych_participantNumber');
+        console.log('🧹 [RESUME] Cleared resume data - experiment completed');
+
+        if (BATCH_CONFIG.useIndexedDB) {
+          // --- CON IndexedDB: Enviar datos acumulados ---
+          
+          // Esperar cualquier batch pendiente
+          if (pendingBatchSaves.length > 0) {
+            console.log('Waiting for', pendingBatchSaves.length, 'pending batch saves...');
+            await Promise.allSettled(pendingBatchSaves);
+          }
+
+          const allTrials = await TrialDB.getAll();
+          
+          if (allTrials.length > 0) {
+            if (BATCH_CONFIG.size === 0) {
+              // batchSize=0: Enviar TODO directo al storage (sin Firestore)
+              console.log(`Sending ${allTrials.length} trials directly to storage (batchSize=0)`);
+              
+              try {
+                await sendCompleteExperiment(allTrials);
+                await TrialDB.clear();
+                console.log('Complete experiment sent to storage successfully');
+              } catch (error) {
+                console.error('Error sending complete experiment:', error);
+                alert('Error sending experiment data. Please contact support.');
+              }
+            } else {
+              // batchSize>0: Enviar trials restantes como batch final a Firestore
+              BATCH_CONFIG.currentBatchNumber++;
+              console.log(`Sending final batch #${BATCH_CONFIG.currentBatchNumber} with ${allTrials.length} remaining trials`);
+              await sendBatchConcatenated(allTrials, BATCH_CONFIG.currentBatchNumber);
+              await TrialDB.clear();
+              
+              // Esperar que el batch final termine
+              if (pendingBatchSaves.length > 0) {
+                console.log('Waiting for final batch to complete...');
+                await Promise.allSettled(pendingBatchSaves);
+              }
+            }
+          }
+        } else {
+          // --- SIN IndexedDB: Datos ya están en Firestore (trials individuales) ---
+          console.log('All trials already in Firestore, triggering finalization...');
+        }
+        
+        // Cancelar el onDisconnect para evitar que marque como abandoned
+        sessionRef.onDisconnect().cancel();
+
+        // Finalizar la sesión normalmente y marcar en Firebase que terminó correctamente
+        console.log('Experiment finished normally, sending data to storage...');
+        
+        try {
+          // Si batchSize=0 CON IndexedDB: Ya se envió directo al storage, NO necesita finalización
+          const needsBackendFinalization = !(BATCH_CONFIG.useIndexedDB && BATCH_CONFIG.size === 0);
+          
+          // Marcar en Firebase que terminó correctamente
+          await sessionRef.update({
+            connected: false,
+            finished: true,
+            needsFinalization: needsBackendFinalization,
+            state: 'completed',
+            finishedAt: window.firebase.database.ServerValue.TIMESTAMP,
+            lastUpdate: window.firebase.database.ServerValue.TIMESTAMP
+          });
+          
+          if (needsBackendFinalization) {
+            console.log('Session marked for finalization in Firebase');
+          } else {
+            console.log('Session completed (batch=0, already sent to storage)');
+          }
+        } catch (error) {
+          console.error('Error marking session as finished:', error);
+        }
+      }
+    });
+    
+    // Uncomment to see the json results after finishing a session experiment
+    // jsPsych.data.displayData('csv');
+
+    const timeline = [];
+
+    // Global preload for all uploaded files from Timeline
+    
+    const globalPreload = {
+      type: jsPsychPreload,
+      files: ["img/1Bienvenida.png","img/2Consentimientoinformado.jpg","img/3Ensayo.png","img/3Instrucciones.png","img/4Buenensayo.png","img/5Final.png"]
+    };
+    timeline.push(globalPreload);
+    
+
+    
+    const test_stimuli_Bienvenida = [{components: [{ type: "ImageComponent", coordinates: {"x":-0.005552836524454485,"y":-0.1612174221753757}, width: 1019.6574990729282, height: 647.4128485154898, zIndex: 1, name: "ImageComponent_1", stimulus: "img/1Bienvenida.png" }],
+response_components: [{ type: "ButtonResponseComponent", coordinates: {"x":0.02785916950128664,"y":0.8802551989140222}, width: 237.54681681402013, height: 59.386704203505005, zIndex: 0, name: "Continuar", button_html: (choice, choice_index) => {
+  const templates = ["<button id=\"i2bf\" style=\"box-sizing: border-box; padding: 10px 20px; border-radius: 6px; background: #3b82f6; color: white; border: none; font-weight: 600; cursor: pointer; text-align: center; background-color: #46b5db;\">Continuar</button>"];
+  return templates[choice_index] || templates[0];
+}, choices: ["Continuar"] }]}];
+    const Bienvenida_timeline = {
+    type: DynamicPlugin, components: jsPsych.timelineVariable("components"),
+response_components: jsPsych.timelineVariable("response_components"),
+      data: {
+        rt: "rt",
+        trial_id: 1771875605145,
+        builder_id: 1771875605145,
+        
+        
+        branches: [1771876300986],
+        branchConditions: [[{"id":1771876607465,"rules":[{"column":"","op":"==","value":"Continuar","fieldType":"response_components","componentIdx":"Continuar","prop":"response"}],"nextTrialId":"1771876300986","customParameters":{}}]] 
+        
+      },
+    on_start: function(trial) {
+      // Then apply custom parameters from branching conditions (higher priority)
+      // For trials outside loops, use window.branchCustomParameters
+      if (window.branchCustomParameters && typeof window.branchCustomParameters === 'object') {
+        Object.entries(window.branchCustomParameters).forEach(([key, param]) => {
+          if (param && param.source !== 'none') {
+            // Parse key to check if it's a nested survey question
+            const parts = key.split('::');
+            
+            if (parts.length === 4) {
+              // Format: fieldType::componentName::survey_json::questionName
+              const [fieldType, componentName, propName, questionName] = parts;
+              
+              if (fieldType && componentName && propName === 'survey_json' && questionName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1 && fieldArray[compIndex].survey_json) {
+                    // Find the question in survey_json.elements
+                    const elements = fieldArray[compIndex].survey_json.elements || [];
+                    const questionIndex = elements.findIndex(q => q.name === questionName);
+                    
+                    if (questionIndex !== -1) {
+                      // Apply the override value (from typed or csv)
+                      let valueToSet;
+                      if (param.source === 'typed') {
+                        valueToSet = String(param.value); // Convert to string for SurveyJS
+                      } else if (param.source === 'csv') {
+                        valueToSet = String(trial[param.value]); // Get from CSV column and convert to string
+                      }
+                      
+                      if (valueToSet !== undefined && valueToSet !== null) {
+                        fieldArray[compIndex].survey_json.elements[questionIndex].defaultValue = valueToSet;
+                      }
+                    }
+                  }
+                }
+              }
+            } else if (parts.length === 3) {
+              // Format: fieldType::componentName::property (for DynamicPlugin components)
+              const [fieldType, componentName, propName] = parts;
+              
+              if (fieldType && componentName && propName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1) {
+                    // Apply the override value (from typed or csv)
+                    let valueToSet;
+                    if (param.source === 'typed') {
+                      valueToSet = param.value;
+                    } else if (param.source === 'csv') {
+                      valueToSet = trial[param.value];
+                    }
+                    
+                    if (valueToSet !== undefined && valueToSet !== null) {
+                      fieldArray[compIndex][propName] = valueToSet;
+                    }
+                  }
+                }
+              }
+            } else {
+              // Normal parameter (not nested survey question)
+              if (param.source === 'typed' && param.value !== undefined && param.value !== null) {
+                trial[key] = param.value;
+              } else if (param.source === 'csv' && param.value !== undefined && param.value !== null) {
+                trial[key] = trial[param.value];
+              }
+            }
+          }
+        });
+        // Clear the custom parameters after applying them
+        window.branchCustomParameters = null;
+      }
+      
+    },
+    on_finish: function(data) {
+      // Evaluar condiciones del trial para branching global
+      console.log('🔍 [GLOBAL BRANCH] Evaluating branch conditions...');
+      const branches = [1771876300986];
+      const branchConditions = [{"id":1771876607465,"rules":[{"column":"","op":"==","value":"Continuar","fieldType":"response_components","componentIdx":"Continuar","prop":"response"}],"nextTrialId":"1771876300986","customParameters":{}}].flat();
+      console.log('🔍 [GLOBAL BRANCH] Available branches:', branches);
+      console.log('🔍 [GLOBAL BRANCH] Conditions to evaluate:', branchConditions.length);
+      
+      let nextTrialId = null;
+      let matchedCustomParameters = null;
+      
+      // Evaluar cada condición (lógica OR entre condiciones)
+      for (const condition of branchConditions) {
+        if (!condition || !condition.rules) {
+          continue;
+        }
+        
+        // Todas las reglas en una condición deben ser verdaderas (lógica AND)
+        const allRulesMatch = condition.rules.every(rule => {
+          let propValue;
+          
+          // Parse column name to extract component info for dynamic plugins
+          // Format: "componentName_propertyName" or "componentName_questionName" for surveys
+          // If column is empty, construct it from componentIdx and prop
+          let columnName = rule.column || "";
+          if (!columnName && rule.componentIdx && rule.prop) {
+            columnName = rule.componentIdx + '_' + rule.prop;
+          } else if (!columnName && rule.prop) {
+            columnName = rule.prop;
+          }
+          const parts = columnName.split("_");
+          
+          // Check if this looks like a dynamic plugin column (has underscore)
+          if (parts.length >= 2) {
+            // Last part is the property or question name
+            const propertyOrQuestion = parts[parts.length - 1];
+            // Everything before the last underscore is the component name
+            const componentName = parts.slice(0, -1).join("_");
+            
+            // First, try direct access with the full columnName (e.g., "ButtonResponseComponent_1_response")
+            if (data[columnName] !== undefined) {
+              propValue = data[columnName];
+            } else {
+              // If not found, try componentName_response format and check if it's an object (SurveyComponent case)
+              const responseKey = componentName + '_response';
+              const responseData = data[responseKey];
+              
+              // If response data exists and is an object (SurveyComponent case)
+              if (responseData && typeof responseData === 'object' && !Array.isArray(responseData)) {
+                // This is likely a survey response - check if property is a question name
+                if (responseData[propertyOrQuestion] !== undefined) {
+                  propValue = responseData[propertyOrQuestion];
+                } else {
+                  return false;
+                }
+              } else {
+                return false;
+              }
+            }
+          } else {
+            // Normal plugin structure - direct property access
+            propValue = data[columnName];
+          }
+          
+          const compareValue = rule.value;
+          
+          // Handle array responses (multi-select or single-select returned as array)
+          if (Array.isArray(propValue)) {
+            const matches = propValue.includes(compareValue) || propValue.includes(String(compareValue));
+            switch (rule.op) {
+              case '==':
+                return matches;
+              case '!=':
+                return !matches;
+              default:
+                return false;
+            }
+          }
+          
+          // Convertir valores para comparación
+          const numPropValue = parseFloat(propValue);
+          const numCompareValue = parseFloat(compareValue);
+          const isNumeric = !isNaN(numPropValue) && !isNaN(numCompareValue);
+          
+          switch (rule.op) {
+            case '==':
+              return isNumeric ? numPropValue === numCompareValue : propValue == compareValue;
+            case '!=':
+              return isNumeric ? numPropValue !== numCompareValue : propValue != compareValue;
+            case '>':
+              return isNumeric && numPropValue > numCompareValue;
+            case '<':
+              return isNumeric && numPropValue < numCompareValue;
+            case '>=':
+              return isNumeric && numPropValue >= numCompareValue;
+            case '<=':
+              return isNumeric && numPropValue <= numCompareValue;
+            default:
+              return false;
+          }
+        });
+        
+        if (allRulesMatch) {
+          console.log('✅ [GLOBAL BRANCH] Condition matched! Next trial:', condition.nextTrialId);
+          nextTrialId = condition.nextTrialId;
+          // Store custom parameters if they exist
+          if (condition.customParameters) {
+            matchedCustomParameters = condition.customParameters;
+            console.log('✅ [GLOBAL BRANCH] Custom parameters:', matchedCustomParameters);
+          }
+          break;
+        }
+      }
+      
+      // Si se encontró match, activar branching
+      if (nextTrialId) {
+        console.log('🎯 [GLOBAL BRANCH] Activating branching to trial:', nextTrialId);
+        window.nextTrialId = nextTrialId;
+        window.skipRemaining = true;
+        window.branchingActive = true;
+        // Store custom parameters for the next trial
+        if (matchedCustomParameters) {
+          window.branchCustomParameters = matchedCustomParameters;
+        }
+      } else {
+        // No match - ir al primer branch por defecto
+        console.log('⚠️ [GLOBAL BRANCH] No condition matched, branching to first branch:', branches[0]);
+        window.nextTrialId = branches[0];
+        window.skipRemaining = true;
+        window.branchingActive = true;
+      }
+      
+    },};
+    console.log("=== PROCEDURE SETUP Bienvenida ===");
+    console.log("test_stimuli_Bienvenida before procedure:", test_stimuli_Bienvenida);
+    console.log("test_stimuli_Bienvenida.length:", test_stimuli_Bienvenida ? test_stimuli_Bienvenida.length : 'undefined');
+    
+    const Bienvenida_procedure = {
+    timeline: 
+    [Bienvenida_timeline],
+    timeline_variables: test_stimuli_Bienvenida,
+    
+    conditional_function: function() {
+      const currentId = 1771875605145;
+      
+      // Verificar si hay un trial objetivo guardado en localStorage (para repeat/jump)
+      const jumpToTrial = localStorage.getItem('jsPsych_jumpToTrial');
+      if (jumpToTrial) {
+        if (String(currentId) === String(jumpToTrial)) {
+          // Encontramos el trial objetivo para repeat/jump
+          console.log('🔁 [REPEAT/JUMP] Found target trial', currentId);
+          localStorage.removeItem('jsPsych_jumpToTrial');
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [REPEAT/JUMP] Skipping trial', currentId);
+        return false;
+      }
+      
+      // Si skipRemaining está activo (branching normal), verificar si este es el trial objetivo
+      if (window.skipRemaining) {
+        console.log('🔍 [SKIP CHECK] Trial', currentId, '| Target:', window.nextTrialId, '| Match:', String(currentId) === String(window.nextTrialId));
+        if (String(currentId) === String(window.nextTrialId)) {
+          // Encontramos el trial objetivo
+          console.log('✅ [SKIP CHECK] Found target trial! Disabling skip mode');
+          window.skipRemaining = false;
+          window.nextTrialId = null;
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [SKIP CHECK] Skipping trial', currentId);
+        return false;
+      }
+      
+      return true;
+    },
+  
+    
+    };
+    timeline.push(Bienvenida_procedure);
+  
+
+
+    const test_stimuli_Consentimiento_Informado = [{components: [{ type: "ImageComponent", coordinates: {"x":-0.008123088685016766,"y":-0.22232376083078545}, width: 1021.0642201834834, height: 599.4984709480117, zIndex: 1, name: "ImageComponent_1", stimulus: "img/2Consentimientoinformado.jpg" }],
+response_components: [{ type: "ButtonResponseComponent", coordinates: {"x":-0.5290519877675841,"y":0.762487257900102}, width: 200, height: 50, name: "Acepto", button_html: (choice, choice_index) => {
+  const templates = ["<button id=\"iqfi\" style=\"box-sizing: border-box; padding: 10px 20px; border-radius: 6px; background: #3b82f6; color: white; border: none; font-weight: 600; cursor: pointer;\">Acepto</button>"];
+  return templates[choice_index] || templates[0];
+}, choices: ["Acepto"] }, { type: "ButtonResponseComponent", coordinates: {"x":0.5412844036697249,"y":0.7665647298674818}, width: 200, height: 50, name: "No acepto", button_html: (choice, choice_index) => {
+  const templates = ["<button id=\"i665\" style=\"box-sizing: border-box; padding: 10px 20px; border-radius: 6px; background: #3b82f6; color: white; border: none; font-weight: 600; cursor: pointer;\">No_acepto</button>"];
+  return templates[choice_index] || templates[0];
+}, choices: ["No_acepto"] }]}];
+    const Consentimiento_Informado_timeline = {
+    type: DynamicPlugin, components: jsPsych.timelineVariable("components"),
+response_components: jsPsych.timelineVariable("response_components"),
+      data: {
+        rt: "rt",
+        trial_id: 1771876300986,
+        builder_id: 1771876300986,
+        
+        
+        branches: [1771876650234, 1771876661037],
+        branchConditions: [[{"id":1771876773877,"rules":[{"column":"","op":"==","value":"Acepto","fieldType":"response_components","componentIdx":"Acepto","prop":"response"}],"nextTrialId":"1771876650234","customParameters":{}},{"id":1771876838177,"rules":[{"column":"","op":"==","value":"No_acepto","fieldType":"response_components","componentIdx":"No acepto","prop":"response"}],"nextTrialId":"1771876661037","customParameters":{}}]] 
+        
+      },
+    on_start: function(trial) {
+      // Then apply custom parameters from branching conditions (higher priority)
+      // For trials outside loops, use window.branchCustomParameters
+      if (window.branchCustomParameters && typeof window.branchCustomParameters === 'object') {
+        Object.entries(window.branchCustomParameters).forEach(([key, param]) => {
+          if (param && param.source !== 'none') {
+            // Parse key to check if it's a nested survey question
+            const parts = key.split('::');
+            
+            if (parts.length === 4) {
+              // Format: fieldType::componentName::survey_json::questionName
+              const [fieldType, componentName, propName, questionName] = parts;
+              
+              if (fieldType && componentName && propName === 'survey_json' && questionName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1 && fieldArray[compIndex].survey_json) {
+                    // Find the question in survey_json.elements
+                    const elements = fieldArray[compIndex].survey_json.elements || [];
+                    const questionIndex = elements.findIndex(q => q.name === questionName);
+                    
+                    if (questionIndex !== -1) {
+                      // Apply the override value (from typed or csv)
+                      let valueToSet;
+                      if (param.source === 'typed') {
+                        valueToSet = String(param.value); // Convert to string for SurveyJS
+                      } else if (param.source === 'csv') {
+                        valueToSet = String(trial[param.value]); // Get from CSV column and convert to string
+                      }
+                      
+                      if (valueToSet !== undefined && valueToSet !== null) {
+                        fieldArray[compIndex].survey_json.elements[questionIndex].defaultValue = valueToSet;
+                      }
+                    }
+                  }
+                }
+              }
+            } else if (parts.length === 3) {
+              // Format: fieldType::componentName::property (for DynamicPlugin components)
+              const [fieldType, componentName, propName] = parts;
+              
+              if (fieldType && componentName && propName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1) {
+                    // Apply the override value (from typed or csv)
+                    let valueToSet;
+                    if (param.source === 'typed') {
+                      valueToSet = param.value;
+                    } else if (param.source === 'csv') {
+                      valueToSet = trial[param.value];
+                    }
+                    
+                    if (valueToSet !== undefined && valueToSet !== null) {
+                      fieldArray[compIndex][propName] = valueToSet;
+                    }
+                  }
+                }
+              }
+            } else {
+              // Normal parameter (not nested survey question)
+              if (param.source === 'typed' && param.value !== undefined && param.value !== null) {
+                trial[key] = param.value;
+              } else if (param.source === 'csv' && param.value !== undefined && param.value !== null) {
+                trial[key] = trial[param.value];
+              }
+            }
+          }
+        });
+        // Clear the custom parameters after applying them
+        window.branchCustomParameters = null;
+      }
+      
+    },
+    on_finish: function(data) {
+      // Evaluar condiciones del trial para branching global
+      console.log('🔍 [GLOBAL BRANCH] Evaluating branch conditions...');
+      const branches = [1771876650234, 1771876661037];
+      const branchConditions = [{"id":1771876773877,"rules":[{"column":"","op":"==","value":"Acepto","fieldType":"response_components","componentIdx":"Acepto","prop":"response"}],"nextTrialId":"1771876650234","customParameters":{}},{"id":1771876838177,"rules":[{"column":"","op":"==","value":"No_acepto","fieldType":"response_components","componentIdx":"No acepto","prop":"response"}],"nextTrialId":"1771876661037","customParameters":{}}].flat();
+      console.log('🔍 [GLOBAL BRANCH] Available branches:', branches);
+      console.log('🔍 [GLOBAL BRANCH] Conditions to evaluate:', branchConditions.length);
+      
+      let nextTrialId = null;
+      let matchedCustomParameters = null;
+      
+      // Evaluar cada condición (lógica OR entre condiciones)
+      for (const condition of branchConditions) {
+        if (!condition || !condition.rules) {
+          continue;
+        }
+        
+        // Todas las reglas en una condición deben ser verdaderas (lógica AND)
+        const allRulesMatch = condition.rules.every(rule => {
+          let propValue;
+          
+          // Parse column name to extract component info for dynamic plugins
+          // Format: "componentName_propertyName" or "componentName_questionName" for surveys
+          // If column is empty, construct it from componentIdx and prop
+          let columnName = rule.column || "";
+          if (!columnName && rule.componentIdx && rule.prop) {
+            columnName = rule.componentIdx + '_' + rule.prop;
+          } else if (!columnName && rule.prop) {
+            columnName = rule.prop;
+          }
+          const parts = columnName.split("_");
+          
+          // Check if this looks like a dynamic plugin column (has underscore)
+          if (parts.length >= 2) {
+            // Last part is the property or question name
+            const propertyOrQuestion = parts[parts.length - 1];
+            // Everything before the last underscore is the component name
+            const componentName = parts.slice(0, -1).join("_");
+            
+            // First, try direct access with the full columnName (e.g., "ButtonResponseComponent_1_response")
+            if (data[columnName] !== undefined) {
+              propValue = data[columnName];
+            } else {
+              // If not found, try componentName_response format and check if it's an object (SurveyComponent case)
+              const responseKey = componentName + '_response';
+              const responseData = data[responseKey];
+              
+              // If response data exists and is an object (SurveyComponent case)
+              if (responseData && typeof responseData === 'object' && !Array.isArray(responseData)) {
+                // This is likely a survey response - check if property is a question name
+                if (responseData[propertyOrQuestion] !== undefined) {
+                  propValue = responseData[propertyOrQuestion];
+                } else {
+                  return false;
+                }
+              } else {
+                return false;
+              }
+            }
+          } else {
+            // Normal plugin structure - direct property access
+            propValue = data[columnName];
+          }
+          
+          const compareValue = rule.value;
+          
+          // Handle array responses (multi-select or single-select returned as array)
+          if (Array.isArray(propValue)) {
+            const matches = propValue.includes(compareValue) || propValue.includes(String(compareValue));
+            switch (rule.op) {
+              case '==':
+                return matches;
+              case '!=':
+                return !matches;
+              default:
+                return false;
+            }
+          }
+          
+          // Convertir valores para comparación
+          const numPropValue = parseFloat(propValue);
+          const numCompareValue = parseFloat(compareValue);
+          const isNumeric = !isNaN(numPropValue) && !isNaN(numCompareValue);
+          
+          switch (rule.op) {
+            case '==':
+              return isNumeric ? numPropValue === numCompareValue : propValue == compareValue;
+            case '!=':
+              return isNumeric ? numPropValue !== numCompareValue : propValue != compareValue;
+            case '>':
+              return isNumeric && numPropValue > numCompareValue;
+            case '<':
+              return isNumeric && numPropValue < numCompareValue;
+            case '>=':
+              return isNumeric && numPropValue >= numCompareValue;
+            case '<=':
+              return isNumeric && numPropValue <= numCompareValue;
+            default:
+              return false;
+          }
+        });
+        
+        if (allRulesMatch) {
+          console.log('✅ [GLOBAL BRANCH] Condition matched! Next trial:', condition.nextTrialId);
+          nextTrialId = condition.nextTrialId;
+          // Store custom parameters if they exist
+          if (condition.customParameters) {
+            matchedCustomParameters = condition.customParameters;
+            console.log('✅ [GLOBAL BRANCH] Custom parameters:', matchedCustomParameters);
+          }
+          break;
+        }
+      }
+      
+      // Si se encontró match, activar branching
+      if (nextTrialId) {
+        console.log('🎯 [GLOBAL BRANCH] Activating branching to trial:', nextTrialId);
+        window.nextTrialId = nextTrialId;
+        window.skipRemaining = true;
+        window.branchingActive = true;
+        // Store custom parameters for the next trial
+        if (matchedCustomParameters) {
+          window.branchCustomParameters = matchedCustomParameters;
+        }
+      } else {
+        // No match - ir al primer branch por defecto
+        console.log('⚠️ [GLOBAL BRANCH] No condition matched, branching to first branch:', branches[0]);
+        window.nextTrialId = branches[0];
+        window.skipRemaining = true;
+        window.branchingActive = true;
+      }
+      
+    },};
+    console.log("=== PROCEDURE SETUP Consentimiento_Informado ===");
+    console.log("test_stimuli_Consentimiento_Informado before procedure:", test_stimuli_Consentimiento_Informado);
+    console.log("test_stimuli_Consentimiento_Informado.length:", test_stimuli_Consentimiento_Informado ? test_stimuli_Consentimiento_Informado.length : 'undefined');
+    
+    const Consentimiento_Informado_procedure = {
+    timeline: 
+    [Consentimiento_Informado_timeline],
+    timeline_variables: test_stimuli_Consentimiento_Informado,
+    
+    conditional_function: function() {
+      const currentId = 1771876300986;
+      
+      // Verificar si hay un trial objetivo guardado en localStorage (para repeat/jump)
+      const jumpToTrial = localStorage.getItem('jsPsych_jumpToTrial');
+      if (jumpToTrial) {
+        if (String(currentId) === String(jumpToTrial)) {
+          // Encontramos el trial objetivo para repeat/jump
+          console.log('🔁 [REPEAT/JUMP] Found target trial', currentId);
+          localStorage.removeItem('jsPsych_jumpToTrial');
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [REPEAT/JUMP] Skipping trial', currentId);
+        return false;
+      }
+      
+      // Si skipRemaining está activo (branching normal), verificar si este es el trial objetivo
+      if (window.skipRemaining) {
+        console.log('🔍 [SKIP CHECK] Trial', currentId, '| Target:', window.nextTrialId, '| Match:', String(currentId) === String(window.nextTrialId));
+        if (String(currentId) === String(window.nextTrialId)) {
+          // Encontramos el trial objetivo
+          console.log('✅ [SKIP CHECK] Found target trial! Disabling skip mode');
+          window.skipRemaining = false;
+          window.nextTrialId = null;
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [SKIP CHECK] Skipping trial', currentId);
+        return false;
+      }
+      
+      return true;
+    },
+  
+    
+    };
+    timeline.push(Consentimiento_Informado_procedure);
+  
+
+
+    const test_stimuli_Instrucciones = [{components: [{ type: "ImageComponent", coordinates: {"x":0.0054472477064224645,"y":-0.1848858785677887}, width: 1027.3272171253816, height: 622.9847094801219, zIndex: 1, name: "ImageComponent_1", stimulus: "img/3Instrucciones.png" }],
+response_components: [{ type: "ButtonResponseComponent", coordinates: {"x":0.004954413316633044,"y":0.794021958680999}, width: 232.92753017303394, height: 58.231882543258486, zIndex: 0, name: "Continuar a inicio del ensayo", button_html: (choice, choice_index) => {
+  const templates = ["<button id=\"i835\" style=\"box-sizing: border-box; padding: 10px 20px; border-radius: 6px; background: #3b82f6; color: white; border: none; font-weight: 600; cursor: pointer;\">Continuar<br style=\"box-sizing: border-box;\"></button>"];
+  return templates[choice_index] || templates[0];
+}, choices: ["Continuar"] }]}];
+    const Instrucciones_timeline = {
+    type: DynamicPlugin, components: jsPsych.timelineVariable("components"),
+response_components: jsPsych.timelineVariable("response_components"),
+      data: {
+        rt: "rt",
+        trial_id: 1771876650234,
+        builder_id: 1771876650234,
+        
+        
+        branches: [1771877270110],
+        branchConditions: [[{"id":1771877297362,"rules":[{"column":"","op":"==","value":"Continuar","fieldType":"response_components","componentIdx":"Continuar a inicio del ensayo","prop":"response"}],"nextTrialId":"1771877270110","customParameters":{}}]] 
+        
+      },
+    on_start: function(trial) {
+      // Then apply custom parameters from branching conditions (higher priority)
+      // For trials outside loops, use window.branchCustomParameters
+      if (window.branchCustomParameters && typeof window.branchCustomParameters === 'object') {
+        Object.entries(window.branchCustomParameters).forEach(([key, param]) => {
+          if (param && param.source !== 'none') {
+            // Parse key to check if it's a nested survey question
+            const parts = key.split('::');
+            
+            if (parts.length === 4) {
+              // Format: fieldType::componentName::survey_json::questionName
+              const [fieldType, componentName, propName, questionName] = parts;
+              
+              if (fieldType && componentName && propName === 'survey_json' && questionName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1 && fieldArray[compIndex].survey_json) {
+                    // Find the question in survey_json.elements
+                    const elements = fieldArray[compIndex].survey_json.elements || [];
+                    const questionIndex = elements.findIndex(q => q.name === questionName);
+                    
+                    if (questionIndex !== -1) {
+                      // Apply the override value (from typed or csv)
+                      let valueToSet;
+                      if (param.source === 'typed') {
+                        valueToSet = String(param.value); // Convert to string for SurveyJS
+                      } else if (param.source === 'csv') {
+                        valueToSet = String(trial[param.value]); // Get from CSV column and convert to string
+                      }
+                      
+                      if (valueToSet !== undefined && valueToSet !== null) {
+                        fieldArray[compIndex].survey_json.elements[questionIndex].defaultValue = valueToSet;
+                      }
+                    }
+                  }
+                }
+              }
+            } else if (parts.length === 3) {
+              // Format: fieldType::componentName::property (for DynamicPlugin components)
+              const [fieldType, componentName, propName] = parts;
+              
+              if (fieldType && componentName && propName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1) {
+                    // Apply the override value (from typed or csv)
+                    let valueToSet;
+                    if (param.source === 'typed') {
+                      valueToSet = param.value;
+                    } else if (param.source === 'csv') {
+                      valueToSet = trial[param.value];
+                    }
+                    
+                    if (valueToSet !== undefined && valueToSet !== null) {
+                      fieldArray[compIndex][propName] = valueToSet;
+                    }
+                  }
+                }
+              }
+            } else {
+              // Normal parameter (not nested survey question)
+              if (param.source === 'typed' && param.value !== undefined && param.value !== null) {
+                trial[key] = param.value;
+              } else if (param.source === 'csv' && param.value !== undefined && param.value !== null) {
+                trial[key] = trial[param.value];
+              }
+            }
+          }
+        });
+        // Clear the custom parameters after applying them
+        window.branchCustomParameters = null;
+      }
+      
+    },
+    on_finish: function(data) {
+      // Evaluar condiciones del trial para branching global
+      console.log('🔍 [GLOBAL BRANCH] Evaluating branch conditions...');
+      const branches = [1771877270110];
+      const branchConditions = [{"id":1771877297362,"rules":[{"column":"","op":"==","value":"Continuar","fieldType":"response_components","componentIdx":"Continuar a inicio del ensayo","prop":"response"}],"nextTrialId":"1771877270110","customParameters":{}}].flat();
+      console.log('🔍 [GLOBAL BRANCH] Available branches:', branches);
+      console.log('🔍 [GLOBAL BRANCH] Conditions to evaluate:', branchConditions.length);
+      
+      let nextTrialId = null;
+      let matchedCustomParameters = null;
+      
+      // Evaluar cada condición (lógica OR entre condiciones)
+      for (const condition of branchConditions) {
+        if (!condition || !condition.rules) {
+          continue;
+        }
+        
+        // Todas las reglas en una condición deben ser verdaderas (lógica AND)
+        const allRulesMatch = condition.rules.every(rule => {
+          let propValue;
+          
+          // Parse column name to extract component info for dynamic plugins
+          // Format: "componentName_propertyName" or "componentName_questionName" for surveys
+          // If column is empty, construct it from componentIdx and prop
+          let columnName = rule.column || "";
+          if (!columnName && rule.componentIdx && rule.prop) {
+            columnName = rule.componentIdx + '_' + rule.prop;
+          } else if (!columnName && rule.prop) {
+            columnName = rule.prop;
+          }
+          const parts = columnName.split("_");
+          
+          // Check if this looks like a dynamic plugin column (has underscore)
+          if (parts.length >= 2) {
+            // Last part is the property or question name
+            const propertyOrQuestion = parts[parts.length - 1];
+            // Everything before the last underscore is the component name
+            const componentName = parts.slice(0, -1).join("_");
+            
+            // First, try direct access with the full columnName (e.g., "ButtonResponseComponent_1_response")
+            if (data[columnName] !== undefined) {
+              propValue = data[columnName];
+            } else {
+              // If not found, try componentName_response format and check if it's an object (SurveyComponent case)
+              const responseKey = componentName + '_response';
+              const responseData = data[responseKey];
+              
+              // If response data exists and is an object (SurveyComponent case)
+              if (responseData && typeof responseData === 'object' && !Array.isArray(responseData)) {
+                // This is likely a survey response - check if property is a question name
+                if (responseData[propertyOrQuestion] !== undefined) {
+                  propValue = responseData[propertyOrQuestion];
+                } else {
+                  return false;
+                }
+              } else {
+                return false;
+              }
+            }
+          } else {
+            // Normal plugin structure - direct property access
+            propValue = data[columnName];
+          }
+          
+          const compareValue = rule.value;
+          
+          // Handle array responses (multi-select or single-select returned as array)
+          if (Array.isArray(propValue)) {
+            const matches = propValue.includes(compareValue) || propValue.includes(String(compareValue));
+            switch (rule.op) {
+              case '==':
+                return matches;
+              case '!=':
+                return !matches;
+              default:
+                return false;
+            }
+          }
+          
+          // Convertir valores para comparación
+          const numPropValue = parseFloat(propValue);
+          const numCompareValue = parseFloat(compareValue);
+          const isNumeric = !isNaN(numPropValue) && !isNaN(numCompareValue);
+          
+          switch (rule.op) {
+            case '==':
+              return isNumeric ? numPropValue === numCompareValue : propValue == compareValue;
+            case '!=':
+              return isNumeric ? numPropValue !== numCompareValue : propValue != compareValue;
+            case '>':
+              return isNumeric && numPropValue > numCompareValue;
+            case '<':
+              return isNumeric && numPropValue < numCompareValue;
+            case '>=':
+              return isNumeric && numPropValue >= numCompareValue;
+            case '<=':
+              return isNumeric && numPropValue <= numCompareValue;
+            default:
+              return false;
+          }
+        });
+        
+        if (allRulesMatch) {
+          console.log('✅ [GLOBAL BRANCH] Condition matched! Next trial:', condition.nextTrialId);
+          nextTrialId = condition.nextTrialId;
+          // Store custom parameters if they exist
+          if (condition.customParameters) {
+            matchedCustomParameters = condition.customParameters;
+            console.log('✅ [GLOBAL BRANCH] Custom parameters:', matchedCustomParameters);
+          }
+          break;
+        }
+      }
+      
+      // Si se encontró match, activar branching
+      if (nextTrialId) {
+        console.log('🎯 [GLOBAL BRANCH] Activating branching to trial:', nextTrialId);
+        window.nextTrialId = nextTrialId;
+        window.skipRemaining = true;
+        window.branchingActive = true;
+        // Store custom parameters for the next trial
+        if (matchedCustomParameters) {
+          window.branchCustomParameters = matchedCustomParameters;
+        }
+      } else {
+        // No match - ir al primer branch por defecto
+        console.log('⚠️ [GLOBAL BRANCH] No condition matched, branching to first branch:', branches[0]);
+        window.nextTrialId = branches[0];
+        window.skipRemaining = true;
+        window.branchingActive = true;
+      }
+      
+    },};
+    console.log("=== PROCEDURE SETUP Instrucciones ===");
+    console.log("test_stimuli_Instrucciones before procedure:", test_stimuli_Instrucciones);
+    console.log("test_stimuli_Instrucciones.length:", test_stimuli_Instrucciones ? test_stimuli_Instrucciones.length : 'undefined');
+    
+    const Instrucciones_procedure = {
+    timeline: 
+    [Instrucciones_timeline],
+    timeline_variables: test_stimuli_Instrucciones,
+    
+    conditional_function: function() {
+      const currentId = 1771876650234;
+      
+      // Verificar si hay un trial objetivo guardado en localStorage (para repeat/jump)
+      const jumpToTrial = localStorage.getItem('jsPsych_jumpToTrial');
+      if (jumpToTrial) {
+        if (String(currentId) === String(jumpToTrial)) {
+          // Encontramos el trial objetivo para repeat/jump
+          console.log('🔁 [REPEAT/JUMP] Found target trial', currentId);
+          localStorage.removeItem('jsPsych_jumpToTrial');
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [REPEAT/JUMP] Skipping trial', currentId);
+        return false;
+      }
+      
+      // Si skipRemaining está activo (branching normal), verificar si este es el trial objetivo
+      if (window.skipRemaining) {
+        console.log('🔍 [SKIP CHECK] Trial', currentId, '| Target:', window.nextTrialId, '| Match:', String(currentId) === String(window.nextTrialId));
+        if (String(currentId) === String(window.nextTrialId)) {
+          // Encontramos el trial objetivo
+          console.log('✅ [SKIP CHECK] Found target trial! Disabling skip mode');
+          window.skipRemaining = false;
+          window.nextTrialId = null;
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [SKIP CHECK] Skipping trial', currentId);
+        return false;
+      }
+      
+      return true;
+    },
+  
+    
+    };
+    timeline.push(Instrucciones_procedure);
+  
+
+
+    const test_stimuli_Consentimiento_informado_rechazado = [{components: [{ type: "ImageComponent", coordinates: {"x":-0.00738202229731566,"y":-0.17393259801386055}, width: 1020.2483058591779, height: 638.9341407053035, zIndex: 1, name: "ImageComponent_1", stimulus: "img/5Final.png" }],
+response_components: [{ type: "ButtonResponseComponent", coordinates: {"x":0.6763423410714879,"y":0.8323185036973886}, width: 234.6137409486337, height: 58.65343523715837, name: "Terminar prueba", button_html: (choice, choice_index) => {
+  const templates = ["<button id=\"i3qn\" style=\"box-sizing: border-box; padding: 10px 20px; border-radius: 6px; background: #3b82f6; color: white; border: none; font-weight: 600; cursor: pointer;\">Salir</button>"];
+  return templates[choice_index] || templates[0];
+}, choices: ["Salir"] }]}];
+    const Consentimiento_informado_rechazado_timeline = {
+    type: DynamicPlugin, components: jsPsych.timelineVariable("components"),
+response_components: jsPsych.timelineVariable("response_components"),
+      data: {
+        rt: "rt",
+        trial_id: 1771876661037,
+        builder_id: 1771876661037,
+        
+        
+      },
+    on_start: function(trial) {
+      // Then apply custom parameters from branching conditions (higher priority)
+      // For trials outside loops, use window.branchCustomParameters
+      if (window.branchCustomParameters && typeof window.branchCustomParameters === 'object') {
+        Object.entries(window.branchCustomParameters).forEach(([key, param]) => {
+          if (param && param.source !== 'none') {
+            // Parse key to check if it's a nested survey question
+            const parts = key.split('::');
+            
+            if (parts.length === 4) {
+              // Format: fieldType::componentName::survey_json::questionName
+              const [fieldType, componentName, propName, questionName] = parts;
+              
+              if (fieldType && componentName && propName === 'survey_json' && questionName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1 && fieldArray[compIndex].survey_json) {
+                    // Find the question in survey_json.elements
+                    const elements = fieldArray[compIndex].survey_json.elements || [];
+                    const questionIndex = elements.findIndex(q => q.name === questionName);
+                    
+                    if (questionIndex !== -1) {
+                      // Apply the override value (from typed or csv)
+                      let valueToSet;
+                      if (param.source === 'typed') {
+                        valueToSet = String(param.value); // Convert to string for SurveyJS
+                      } else if (param.source === 'csv') {
+                        valueToSet = String(trial[param.value]); // Get from CSV column and convert to string
+                      }
+                      
+                      if (valueToSet !== undefined && valueToSet !== null) {
+                        fieldArray[compIndex].survey_json.elements[questionIndex].defaultValue = valueToSet;
+                      }
+                    }
+                  }
+                }
+              }
+            } else if (parts.length === 3) {
+              // Format: fieldType::componentName::property (for DynamicPlugin components)
+              const [fieldType, componentName, propName] = parts;
+              
+              if (fieldType && componentName && propName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1) {
+                    // Apply the override value (from typed or csv)
+                    let valueToSet;
+                    if (param.source === 'typed') {
+                      valueToSet = param.value;
+                    } else if (param.source === 'csv') {
+                      valueToSet = trial[param.value];
+                    }
+                    
+                    if (valueToSet !== undefined && valueToSet !== null) {
+                      fieldArray[compIndex][propName] = valueToSet;
+                    }
+                  }
+                }
+              }
+            } else {
+              // Normal parameter (not nested survey question)
+              if (param.source === 'typed' && param.value !== undefined && param.value !== null) {
+                trial[key] = param.value;
+              } else if (param.source === 'csv' && param.value !== undefined && param.value !== null) {
+                trial[key] = trial[param.value];
+              }
+            }
+          }
+        });
+        // Clear the custom parameters after applying them
+        window.branchCustomParameters = null;
+      }
+      
+    },
+    on_finish: function(data) {
+      // Trial terminal - si llegamos aquí después de branching, terminar el experimento
+      if (window.branchingActive) {
+        jsPsych.abortExperiment('', {});
+      }
+    },};
+    console.log("=== PROCEDURE SETUP Consentimiento_informado_rechazado ===");
+    console.log("test_stimuli_Consentimiento_informado_rechazado before procedure:", test_stimuli_Consentimiento_informado_rechazado);
+    console.log("test_stimuli_Consentimiento_informado_rechazado.length:", test_stimuli_Consentimiento_informado_rechazado ? test_stimuli_Consentimiento_informado_rechazado.length : 'undefined');
+    
+    const Consentimiento_informado_rechazado_procedure = {
+    timeline: 
+    [Consentimiento_informado_rechazado_timeline],
+    timeline_variables: test_stimuli_Consentimiento_informado_rechazado,
+    
+    conditional_function: function() {
+      const currentId = 1771876661037;
+      
+      // Verificar si hay un trial objetivo guardado en localStorage (para repeat/jump)
+      const jumpToTrial = localStorage.getItem('jsPsych_jumpToTrial');
+      if (jumpToTrial) {
+        if (String(currentId) === String(jumpToTrial)) {
+          // Encontramos el trial objetivo para repeat/jump
+          console.log('🔁 [REPEAT/JUMP] Found target trial', currentId);
+          localStorage.removeItem('jsPsych_jumpToTrial');
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [REPEAT/JUMP] Skipping trial', currentId);
+        return false;
+      }
+      
+      // Si skipRemaining está activo (branching normal), verificar si este es el trial objetivo
+      if (window.skipRemaining) {
+        console.log('🔍 [SKIP CHECK] Trial', currentId, '| Target:', window.nextTrialId, '| Match:', String(currentId) === String(window.nextTrialId));
+        if (String(currentId) === String(window.nextTrialId)) {
+          // Encontramos el trial objetivo
+          console.log('✅ [SKIP CHECK] Found target trial! Disabling skip mode');
+          window.skipRemaining = false;
+          window.nextTrialId = null;
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [SKIP CHECK] Skipping trial', currentId);
+        return false;
+      }
+      
+      return true;
+    },
+  
+    
+    };
+    timeline.push(Consentimiento_informado_rechazado_procedure);
+  
+
+
+    const test_stimuli_Inicio_Ensayo = [{components: [{ type: "ImageComponent", coordinates: {"x":-0.001791857798165153,"y":-0.16396494329765554}, width: 1019.4984709480112, height: 640.2079510703368, zIndex: 1, name: "ImageComponent_1", stimulus: "img/3Ensayo.png" }],
+response_components: [{ type: "ButtonResponseComponent", coordinates: {"x":0.010468553404815006,"y":0.8259907089735586}, width: 229.21662327942386, height: 57.30415581985594, zIndex: 0, name: "Continuar a ensayo", button_html: (choice, choice_index) => {
+  const templates = ["<button id=\"ip0j\" style=\"box-sizing: border-box; padding: 10px 20px; border-radius: 6px; background: #3b82f6; color: white; border: none; font-weight: 600; cursor: pointer;\">Continuar<br style=\"box-sizing: border-box;\"></button>"];
+  return templates[choice_index] || templates[0];
+}, choices: ["Continuar"] }]}];
+    const Inicio_Ensayo_timeline = {
+    type: DynamicPlugin, components: jsPsych.timelineVariable("components"),
+response_components: jsPsych.timelineVariable("response_components"),
+      data: {
+        rt: "rt",
+        trial_id: 1771877270110,
+        builder_id: 1771877270110,
+        
+        
+        branches: [1771877490636],
+        branchConditions: [[{"id":1771877547430,"rules":[{"column":"","op":"==","value":"Continuar","fieldType":"response_components","componentIdx":"Continuar a ensayo","prop":"response"}],"nextTrialId":"1771877490636","customParameters":{}}]] 
+        
+      },
+    on_start: function(trial) {
+      // Then apply custom parameters from branching conditions (higher priority)
+      // For trials outside loops, use window.branchCustomParameters
+      if (window.branchCustomParameters && typeof window.branchCustomParameters === 'object') {
+        Object.entries(window.branchCustomParameters).forEach(([key, param]) => {
+          if (param && param.source !== 'none') {
+            // Parse key to check if it's a nested survey question
+            const parts = key.split('::');
+            
+            if (parts.length === 4) {
+              // Format: fieldType::componentName::survey_json::questionName
+              const [fieldType, componentName, propName, questionName] = parts;
+              
+              if (fieldType && componentName && propName === 'survey_json' && questionName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1 && fieldArray[compIndex].survey_json) {
+                    // Find the question in survey_json.elements
+                    const elements = fieldArray[compIndex].survey_json.elements || [];
+                    const questionIndex = elements.findIndex(q => q.name === questionName);
+                    
+                    if (questionIndex !== -1) {
+                      // Apply the override value (from typed or csv)
+                      let valueToSet;
+                      if (param.source === 'typed') {
+                        valueToSet = String(param.value); // Convert to string for SurveyJS
+                      } else if (param.source === 'csv') {
+                        valueToSet = String(trial[param.value]); // Get from CSV column and convert to string
+                      }
+                      
+                      if (valueToSet !== undefined && valueToSet !== null) {
+                        fieldArray[compIndex].survey_json.elements[questionIndex].defaultValue = valueToSet;
+                      }
+                    }
+                  }
+                }
+              }
+            } else if (parts.length === 3) {
+              // Format: fieldType::componentName::property (for DynamicPlugin components)
+              const [fieldType, componentName, propName] = parts;
+              
+              if (fieldType && componentName && propName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1) {
+                    // Apply the override value (from typed or csv)
+                    let valueToSet;
+                    if (param.source === 'typed') {
+                      valueToSet = param.value;
+                    } else if (param.source === 'csv') {
+                      valueToSet = trial[param.value];
+                    }
+                    
+                    if (valueToSet !== undefined && valueToSet !== null) {
+                      fieldArray[compIndex][propName] = valueToSet;
+                    }
+                  }
+                }
+              }
+            } else {
+              // Normal parameter (not nested survey question)
+              if (param.source === 'typed' && param.value !== undefined && param.value !== null) {
+                trial[key] = param.value;
+              } else if (param.source === 'csv' && param.value !== undefined && param.value !== null) {
+                trial[key] = trial[param.value];
+              }
+            }
+          }
+        });
+        // Clear the custom parameters after applying them
+        window.branchCustomParameters = null;
+      }
+      
+    },
+    on_finish: function(data) {
+      // Evaluar condiciones del trial para branching global
+      console.log('🔍 [GLOBAL BRANCH] Evaluating branch conditions...');
+      const branches = [1771877490636];
+      const branchConditions = [{"id":1771877547430,"rules":[{"column":"","op":"==","value":"Continuar","fieldType":"response_components","componentIdx":"Continuar a ensayo","prop":"response"}],"nextTrialId":"1771877490636","customParameters":{}}].flat();
+      console.log('🔍 [GLOBAL BRANCH] Available branches:', branches);
+      console.log('🔍 [GLOBAL BRANCH] Conditions to evaluate:', branchConditions.length);
+      
+      let nextTrialId = null;
+      let matchedCustomParameters = null;
+      
+      // Evaluar cada condición (lógica OR entre condiciones)
+      for (const condition of branchConditions) {
+        if (!condition || !condition.rules) {
+          continue;
+        }
+        
+        // Todas las reglas en una condición deben ser verdaderas (lógica AND)
+        const allRulesMatch = condition.rules.every(rule => {
+          let propValue;
+          
+          // Parse column name to extract component info for dynamic plugins
+          // Format: "componentName_propertyName" or "componentName_questionName" for surveys
+          // If column is empty, construct it from componentIdx and prop
+          let columnName = rule.column || "";
+          if (!columnName && rule.componentIdx && rule.prop) {
+            columnName = rule.componentIdx + '_' + rule.prop;
+          } else if (!columnName && rule.prop) {
+            columnName = rule.prop;
+          }
+          const parts = columnName.split("_");
+          
+          // Check if this looks like a dynamic plugin column (has underscore)
+          if (parts.length >= 2) {
+            // Last part is the property or question name
+            const propertyOrQuestion = parts[parts.length - 1];
+            // Everything before the last underscore is the component name
+            const componentName = parts.slice(0, -1).join("_");
+            
+            // First, try direct access with the full columnName (e.g., "ButtonResponseComponent_1_response")
+            if (data[columnName] !== undefined) {
+              propValue = data[columnName];
+            } else {
+              // If not found, try componentName_response format and check if it's an object (SurveyComponent case)
+              const responseKey = componentName + '_response';
+              const responseData = data[responseKey];
+              
+              // If response data exists and is an object (SurveyComponent case)
+              if (responseData && typeof responseData === 'object' && !Array.isArray(responseData)) {
+                // This is likely a survey response - check if property is a question name
+                if (responseData[propertyOrQuestion] !== undefined) {
+                  propValue = responseData[propertyOrQuestion];
+                } else {
+                  return false;
+                }
+              } else {
+                return false;
+              }
+            }
+          } else {
+            // Normal plugin structure - direct property access
+            propValue = data[columnName];
+          }
+          
+          const compareValue = rule.value;
+          
+          // Handle array responses (multi-select or single-select returned as array)
+          if (Array.isArray(propValue)) {
+            const matches = propValue.includes(compareValue) || propValue.includes(String(compareValue));
+            switch (rule.op) {
+              case '==':
+                return matches;
+              case '!=':
+                return !matches;
+              default:
+                return false;
+            }
+          }
+          
+          // Convertir valores para comparación
+          const numPropValue = parseFloat(propValue);
+          const numCompareValue = parseFloat(compareValue);
+          const isNumeric = !isNaN(numPropValue) && !isNaN(numCompareValue);
+          
+          switch (rule.op) {
+            case '==':
+              return isNumeric ? numPropValue === numCompareValue : propValue == compareValue;
+            case '!=':
+              return isNumeric ? numPropValue !== numCompareValue : propValue != compareValue;
+            case '>':
+              return isNumeric && numPropValue > numCompareValue;
+            case '<':
+              return isNumeric && numPropValue < numCompareValue;
+            case '>=':
+              return isNumeric && numPropValue >= numCompareValue;
+            case '<=':
+              return isNumeric && numPropValue <= numCompareValue;
+            default:
+              return false;
+          }
+        });
+        
+        if (allRulesMatch) {
+          console.log('✅ [GLOBAL BRANCH] Condition matched! Next trial:', condition.nextTrialId);
+          nextTrialId = condition.nextTrialId;
+          // Store custom parameters if they exist
+          if (condition.customParameters) {
+            matchedCustomParameters = condition.customParameters;
+            console.log('✅ [GLOBAL BRANCH] Custom parameters:', matchedCustomParameters);
+          }
+          break;
+        }
+      }
+      
+      // Si se encontró match, activar branching
+      if (nextTrialId) {
+        console.log('🎯 [GLOBAL BRANCH] Activating branching to trial:', nextTrialId);
+        window.nextTrialId = nextTrialId;
+        window.skipRemaining = true;
+        window.branchingActive = true;
+        // Store custom parameters for the next trial
+        if (matchedCustomParameters) {
+          window.branchCustomParameters = matchedCustomParameters;
+        }
+      } else {
+        // No match - ir al primer branch por defecto
+        console.log('⚠️ [GLOBAL BRANCH] No condition matched, branching to first branch:', branches[0]);
+        window.nextTrialId = branches[0];
+        window.skipRemaining = true;
+        window.branchingActive = true;
+      }
+      
+    },};
+    console.log("=== PROCEDURE SETUP Inicio_Ensayo ===");
+    console.log("test_stimuli_Inicio_Ensayo before procedure:", test_stimuli_Inicio_Ensayo);
+    console.log("test_stimuli_Inicio_Ensayo.length:", test_stimuli_Inicio_Ensayo ? test_stimuli_Inicio_Ensayo.length : 'undefined');
+    
+    const Inicio_Ensayo_procedure = {
+    timeline: 
+    [Inicio_Ensayo_timeline],
+    timeline_variables: test_stimuli_Inicio_Ensayo,
+    
+    conditional_function: function() {
+      const currentId = 1771877270110;
+      
+      // Verificar si hay un trial objetivo guardado en localStorage (para repeat/jump)
+      const jumpToTrial = localStorage.getItem('jsPsych_jumpToTrial');
+      if (jumpToTrial) {
+        if (String(currentId) === String(jumpToTrial)) {
+          // Encontramos el trial objetivo para repeat/jump
+          console.log('🔁 [REPEAT/JUMP] Found target trial', currentId);
+          localStorage.removeItem('jsPsych_jumpToTrial');
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [REPEAT/JUMP] Skipping trial', currentId);
+        return false;
+      }
+      
+      // Si skipRemaining está activo (branching normal), verificar si este es el trial objetivo
+      if (window.skipRemaining) {
+        console.log('🔍 [SKIP CHECK] Trial', currentId, '| Target:', window.nextTrialId, '| Match:', String(currentId) === String(window.nextTrialId));
+        if (String(currentId) === String(window.nextTrialId)) {
+          // Encontramos el trial objetivo
+          console.log('✅ [SKIP CHECK] Found target trial! Disabling skip mode');
+          window.skipRemaining = false;
+          window.nextTrialId = null;
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [SKIP CHECK] Skipping trial', currentId);
+        return false;
+      }
+      
+      return true;
+    },
+  
+    
+    };
+    timeline.push(Inicio_Ensayo_procedure);
+  
+
+
+    const test_stimuli_Ensayo = [{components: [],
+response_components: []}];
+    const Ensayo_timeline = {
+    type: DynamicPlugin, 
+      data: {
+        rt: "rt",
+        trial_id: 1771877490636,
+        builder_id: 1771877490636,
+        
+        
+      },
+    on_start: function(trial) {
+      // Then apply custom parameters from branching conditions (higher priority)
+      // For trials outside loops, use window.branchCustomParameters
+      if (window.branchCustomParameters && typeof window.branchCustomParameters === 'object') {
+        Object.entries(window.branchCustomParameters).forEach(([key, param]) => {
+          if (param && param.source !== 'none') {
+            // Parse key to check if it's a nested survey question
+            const parts = key.split('::');
+            
+            if (parts.length === 4) {
+              // Format: fieldType::componentName::survey_json::questionName
+              const [fieldType, componentName, propName, questionName] = parts;
+              
+              if (fieldType && componentName && propName === 'survey_json' && questionName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1 && fieldArray[compIndex].survey_json) {
+                    // Find the question in survey_json.elements
+                    const elements = fieldArray[compIndex].survey_json.elements || [];
+                    const questionIndex = elements.findIndex(q => q.name === questionName);
+                    
+                    if (questionIndex !== -1) {
+                      // Apply the override value (from typed or csv)
+                      let valueToSet;
+                      if (param.source === 'typed') {
+                        valueToSet = String(param.value); // Convert to string for SurveyJS
+                      } else if (param.source === 'csv') {
+                        valueToSet = String(trial[param.value]); // Get from CSV column and convert to string
+                      }
+                      
+                      if (valueToSet !== undefined && valueToSet !== null) {
+                        fieldArray[compIndex].survey_json.elements[questionIndex].defaultValue = valueToSet;
+                      }
+                    }
+                  }
+                }
+              }
+            } else if (parts.length === 3) {
+              // Format: fieldType::componentName::property (for DynamicPlugin components)
+              const [fieldType, componentName, propName] = parts;
+              
+              if (fieldType && componentName && propName) {
+                // Find the component by name in the field array
+                const fieldArray = trial[fieldType];
+                if (Array.isArray(fieldArray)) {
+                  const compIndex = fieldArray.findIndex(c => c.name === componentName);
+                  if (compIndex !== -1) {
+                    // Apply the override value (from typed or csv)
+                    let valueToSet;
+                    if (param.source === 'typed') {
+                      valueToSet = param.value;
+                    } else if (param.source === 'csv') {
+                      valueToSet = trial[param.value];
+                    }
+                    
+                    if (valueToSet !== undefined && valueToSet !== null) {
+                      fieldArray[compIndex][propName] = valueToSet;
+                    }
+                  }
+                }
+              }
+            } else {
+              // Normal parameter (not nested survey question)
+              if (param.source === 'typed' && param.value !== undefined && param.value !== null) {
+                trial[key] = param.value;
+              } else if (param.source === 'csv' && param.value !== undefined && param.value !== null) {
+                trial[key] = trial[param.value];
+              }
+            }
+          }
+        });
+        // Clear the custom parameters after applying them
+        window.branchCustomParameters = null;
+      }
+      
+    },
+    on_finish: function(data) {
+      // Trial terminal - si llegamos aquí después de branching, terminar el experimento
+      if (window.branchingActive) {
+        jsPsych.abortExperiment('', {});
+      }
+    },};
+    console.log("=== PROCEDURE SETUP Ensayo ===");
+    console.log("test_stimuli_Ensayo before procedure:", test_stimuli_Ensayo);
+    console.log("test_stimuli_Ensayo.length:", test_stimuli_Ensayo ? test_stimuli_Ensayo.length : 'undefined');
+    
+    const Ensayo_procedure = {
+    timeline: 
+    [Ensayo_timeline],
+    timeline_variables: test_stimuli_Ensayo,
+    
+    conditional_function: function() {
+      const currentId = 1771877490636;
+      
+      // Verificar si hay un trial objetivo guardado en localStorage (para repeat/jump)
+      const jumpToTrial = localStorage.getItem('jsPsych_jumpToTrial');
+      if (jumpToTrial) {
+        if (String(currentId) === String(jumpToTrial)) {
+          // Encontramos el trial objetivo para repeat/jump
+          console.log('🔁 [REPEAT/JUMP] Found target trial', currentId);
+          localStorage.removeItem('jsPsych_jumpToTrial');
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [REPEAT/JUMP] Skipping trial', currentId);
+        return false;
+      }
+      
+      // Si skipRemaining está activo (branching normal), verificar si este es el trial objetivo
+      if (window.skipRemaining) {
+        console.log('🔍 [SKIP CHECK] Trial', currentId, '| Target:', window.nextTrialId, '| Match:', String(currentId) === String(window.nextTrialId));
+        if (String(currentId) === String(window.nextTrialId)) {
+          // Encontramos el trial objetivo
+          console.log('✅ [SKIP CHECK] Found target trial! Disabling skip mode');
+          window.skipRemaining = false;
+          window.nextTrialId = null;
+          return true;
+        }
+        // No es el objetivo, saltar
+        console.log('⏭️ [SKIP CHECK] Skipping trial', currentId);
+        return false;
+      }
+      
+      return true;
+    },
+  
+    
+    };
+    timeline.push(Ensayo_procedure);
+  
+
+    jsPsych.run(timeline);
+    
+    
+
+
+})();
+
+</script></body></html>
